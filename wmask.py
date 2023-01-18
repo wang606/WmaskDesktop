@@ -7,8 +7,8 @@ import pathlib
 from PyQt5.QtCore import QUrl, Qt, pyqtSignal, QTimer, QByteArray
 from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent, QMediaPlaylist
 from PyQt5.QtMultimediaWidgets import QVideoWidget
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QLabel, QPushButton, QHBoxLayout, QSlider, QVBoxLayout, QFileDialog, QScrollArea
-from PyQt5.QtGui import QIcon, QPixmap
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QLabel, QPushButton, QHBoxLayout, QSlider, QVBoxLayout, QFileDialog, QScrollArea, QComboBox, QKeySequenceEdit, QGridLayout, QMessageBox
+from PyQt5.QtGui import QIcon, QPixmap, QCloseEvent
 
 
 # 静态全局配置
@@ -45,24 +45,15 @@ class WmaskMain(QMainWindow):
         # 主界面设置
         self.setWindowTitle("Wmask")
         self.setWindowIcon(ICON_FAVICON)
-        self.flags = Qt.WindowType.CustomizeWindowHint | Qt.WindowType.WindowMinimizeButtonHint # 只有最小化
-        self.setWindowFlags(self.flags)
         self.setFixedWidth(400)
         self.resize(400, 200)
         ### 》 窗体布局
         # 按钮群
         self.newButton = QPushButton("New", parent=self) # 添加媒体
         self.newButton.clicked.connect(self.newButtonOnClicked)
-        self.continueButton = QPushButton("Continue") # 从上次关闭的地方开始
-        self.continueButton.clicked.connect(self.continueButtonClicked)
-        QTimer.singleShot(10000, lambda : self.continueButton.setDisabled(True)) # 10s后失效
-        self.exitButton = QPushButton("Exit", parent=self) # 安全退出
-        self.exitButton.clicked.connect(self.exitButtonOnClicked)
         # 按钮群 水平布局
         self.buttonLayout = QHBoxLayout()
         self.buttonLayout.addWidget(self.newButton)
-        self.buttonLayout.addWidget(self.continueButton)
-        self.buttonLayout.addWidget(self.exitButton)
         # wmask组件群 垂直布局
         self.componentLayout = QVBoxLayout()
         self.componentLayout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -78,6 +69,7 @@ class WmaskMain(QMainWindow):
         self.componentScroll.setWidget(self.componentWidget)
         # 主界面 垂直布局
         self.centralLayout = QVBoxLayout()
+        self.centralLayout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.centralLayout.addLayout(self.buttonLayout)
         self.centralLayout.addWidget(self.componentScroll)
         # 主界面 垂直布局实体组件
@@ -89,17 +81,28 @@ class WmaskMain(QMainWindow):
             self.addComponent(i)
         ### 《 窗体布局
         # 同步wmask视频进度到wmask组件进度滑动条
-        self.syncPositionTimer = QTimer(self)
+        self.syncPositionTimer = QTimer(parent=self)
         self.syncPositionTimer.setInterval(1000)
         self.syncPositionTimer.timeout.connect(self.syncPositionTimerOnTimeout)
         self.syncPositionTimer.start()
+        
+    
+    def closeEvent(self, a0: QCloseEvent) -> None:
+        self.saveConfig()
+        playlist = self.playlist.copy()
+        for i in playlist:
+            self.deleteSlot(i)
+        return super().closeEvent(a0)
     
     # 读取配置文件
     def openConfig(self, config=DEFAULT_CONFIG):
         if not pathlib.Path(config).is_file():
             return
-        with open(config, "r") as fp:
-            config_dict = json.load(fp)
+        try:
+            with open(config, "r") as fp:
+                config_dict = json.load(fp)
+        except:
+            return
         def check(_key:str, _type:type, _default, _dict=config_dict): 
             if _key in _dict and isinstance(_dict[_key], _type):
                 return _dict[_key]
@@ -145,9 +148,9 @@ class WmaskMain(QMainWindow):
         with open(config, "w") as fp:
             json.dump(configObj, fp)
     
-    ### 《 按钮群信号槽
+    ### 》 按钮群信号槽
     def newButtonOnClicked(self):
-        return_lists, _ = QFileDialog.getOpenFileNames(self, "select media", self.folder_path)
+        return_lists, _ = QFileDialog.getOpenFileNames(self, "select media", self.folder_path, "Media Files (*.mp4 *.MP4 *.avi *.AVI *.mkv *.MKV *.webm *.WebM *.mov *.MOV *.flv *.FLV *.ogg *.OGG);;All Files (*.*)")
         if return_lists:
             self.folder_path = str(pathlib.Path(return_lists[-1]).parent)
         for i in return_lists:
@@ -160,23 +163,12 @@ class WmaskMain(QMainWindow):
             self.plays[i] = self.default_play
             self.actives[i] = self.default_active
             self.addComponent(i)
-    
-    def continueButtonClicked(self):
-        for i in self.playlist:
-            self.components[i].positionSlider.setValue(self.positions[i])
-        self.continueButton.setDisabled(True)
-    
-    def exitButtonOnClicked(self):
-        self.saveConfig()
-        playlist = self.playlist.copy()
-        for i in playlist:
-            self.deleteSlot(i)
-        self.close()
     ### 《 按钮群信号槽
     
     # 添加wmask组件
     def addComponent(self, mediaPath:str):
-        self.components[mediaPath] = WmaskComponent(mediaPath, self.opacitys[mediaPath], self.volumes[mediaPath], self.plays[mediaPath], self.actives[mediaPath], parent=self)
+        self.components[mediaPath] = WmaskComponent(mediaPath, self.positions[mediaPath], self.opacitys[mediaPath], self.volumes[mediaPath], self.plays[mediaPath], self.actives[mediaPath], parent=self)
+        self.components[mediaPath].rateSignal.connect(self.rateSlot)
         self.components[mediaPath].playSignal.connect(self.playSlot)
         self.components[mediaPath].activeSignal.connect(self.activeSlot)
         self.components[mediaPath].deleteSignal.connect(self.deleteSlot)
@@ -188,7 +180,13 @@ class WmaskMain(QMainWindow):
         self.componentLayout.addWidget(self.components[mediaPath])
     
     ### 》 Wmask组件信号槽
+    def rateSlot(self, mediaPath:str, value:float):
+        if mediaPath in self.wmasks:
+            self.wmasks[mediaPath].player.setPlaybackRate(value)
+
     def playSlot(self, mediaPath:str, play:bool):
+        if mediaPath not in self.wmasks:
+            return
         if play:
             self.wmasks[mediaPath].player.play()
         else:
@@ -197,19 +195,20 @@ class WmaskMain(QMainWindow):
     def activeSlot(self, mediaPath:str, active:bool):
         if active:
             self.wmasks[mediaPath] = Wmask(mediaPath, self.components[mediaPath].opacitySlider.value(), self.components[mediaPath].volumeSlider.value())
-            self.wmasks[mediaPath].player.durationChanged.connect(self.components[mediaPath].positionSlider.setMaximum)
+            self.wmasks[mediaPath].player.durationChanged.connect(lambda x: self.components[mediaPath].positionSlider.setMaximum(x) if x > 0 else None)
             self.wmasks[mediaPath].player.setPosition(self.components[mediaPath].positionSlider.value())
+            self.wmasks[mediaPath].wmaskCloseSignal.connect(self.wmaskCloseSlot)
             self.wmasks[mediaPath].show()
             if self.components[mediaPath].playOn:
                 self.wmasks[mediaPath].player.play()
         else:
-            self.wmasks[mediaPath].deleteLater()
-            del self.wmasks[mediaPath]
+            if mediaPath in self.wmasks:
+                self.wmasks[mediaPath].deleteLater()
+                del self.wmasks[mediaPath]
     
     def deleteSlot(self, mediaPath:str):
         if self.components[mediaPath].activeOn:
-            self.wmasks[mediaPath].deleteLater()
-            del self.wmasks[mediaPath]
+            self.components[mediaPath].activeButton.click()
         self.components[mediaPath].deleteLater()
         del self.components[mediaPath]
 
@@ -221,18 +220,23 @@ class WmaskMain(QMainWindow):
         self.actives.pop(mediaPath)
     
     def positionSlot(self, mediaPath:str, position:int):
-        if self.components[mediaPath].activeOn:
+        if mediaPath in self.components and self.components[mediaPath].activeOn:
             self.wmasks[mediaPath].player.setPosition(position)
     
     def volumeSlot(self, mediaPath:str, volume:int):
-        if self.components[mediaPath].activeOn:
+        if mediaPath in self.components and self.components[mediaPath].activeOn:
             self.wmasks[mediaPath].player.setVolume(volume)
     
     def opacitySlot(self, mediaPath:str, opacity:int):
-        if self.components[mediaPath].activeOn:
+        if mediaPath in self.components and self.components[mediaPath].activeOn:
             self.wmasks[mediaPath].setWindowOpacity(opacity / 100)
     ### 《 wmask组件信号槽
-    
+
+    # wmask信号槽
+    def wmaskCloseSlot(self, mediaPath:str):
+        if mediaPath in self.components and self.components[mediaPath].activeOn:
+            self.components[mediaPath].activeButton.click()
+
     # 计时器信号槽
     def syncPositionTimerOnTimeout(self):
         for i in self.playlist:
@@ -245,6 +249,7 @@ class WmaskMain(QMainWindow):
 # wmask组件
 class WmaskComponent(QWidget):
     # 信号
+    rateSignal = pyqtSignal(str, float)
     playSignal = pyqtSignal(str, bool)
     activeSignal = pyqtSignal(str, bool)
     deleteSignal = pyqtSignal(str)
@@ -252,11 +257,18 @@ class WmaskComponent(QWidget):
     volumeSignal = pyqtSignal(str, int)
     opactiySignal = pyqtSignal(str, int)
 
-    def __init__(self, mediaPath:str, opacity:int, volume:int, play:bool, active:bool, parent):
+    def __init__(self, mediaPath:str, position:int, opacity:int, volume:int, play:bool, active:bool, parent):
         super().__init__(parent)
         self.mediaPath = mediaPath
         # 名称标签
         self.nameLabel = QLabel(pathlib.Path(mediaPath).name, parent=self)
+        self.nameLabel.setToolTip(self.mediaPath)
+        # 播放速度下拉列表框
+        self.rateComboBox = QComboBox(parent=self)
+        self.rateComboBox.setFixedWidth(80)
+        self.rateComboBox.addItems(["0.25", "0.5", "1.0", "1.25", "1.5"])
+        self.rateComboBox.setCurrentText("1.0")
+        self.rateComboBox.currentTextChanged.connect(self.rateComboBoxOnCurrentTextChanged)
         # 播放/暂停键
         self.playOn = play
         self.playButton = QPushButton(parent=self)
@@ -277,6 +289,7 @@ class WmaskComponent(QWidget):
         # 上面四个组件 水平布局
         self.hlayout = QHBoxLayout()
         self.hlayout.addWidget(self.nameLabel)
+        self.hlayout.addWidget(self.rateComboBox)
         self.hlayout.addWidget(self.playButton)
         self.hlayout.addWidget(self.activeButton)
         self.hlayout.addWidget(self.deleteButton)
@@ -285,7 +298,9 @@ class WmaskComponent(QWidget):
         self.positionLabel.setFixedWidth(80)
         self.positionSlider = QSlider(Qt.Orientation.Horizontal, parent=self)
         self.positionSlider.setMinimum(0)
+        self.positionSlider.setMaximum(2 * position)
         self.positionSlider.setSingleStep(1000)
+        self.positionSlider.setValue(position)
         self.positionSlider.valueChanged.connect(lambda x: self.positionSignal.emit(self.mediaPath, x))
         # 进度 水平布局
         self.h1layout = QHBoxLayout()
@@ -327,8 +342,16 @@ class WmaskComponent(QWidget):
         # 窗体尺寸
         self.setFixedHeight(120)
         self.setFixedWidth(parent.width()-40)
+
+        self.rateComboBox.setEnabled(self.activeOn)
+        self.playButton.setEnabled(self.activeOn)
     
     ### 《 转发信号
+    def rateComboBoxOnCurrentTextChanged(self, value:str):
+        if not self.activeOn:
+            return
+        self.rateSignal.emit(self.mediaPath, float(value))
+
     def playButtonOnClicked(self):
         if not self.activeOn:
             return
@@ -339,6 +362,8 @@ class WmaskComponent(QWidget):
     def activeButtonOnClicked(self):
         self.activeButton.setIcon(ICON_SYSTEM_RUN if self.activeOn else ICON_SYSTEM_SHUTDOWN)
         self.activeOn ^= True
+        self.rateComboBox.setEnabled(self.activeOn)
+        self.playButton.setEnabled(self.activeOn)
         self.activeSignal.emit(self.mediaPath, self.activeOn)
     
     def deleteButtonOnClicked(self):
@@ -348,6 +373,8 @@ class WmaskComponent(QWidget):
 
 # wmask窗体
 class Wmask(QWidget):
+    wmaskCloseSignal = pyqtSignal(str)
+
     def __init__(self, mediaPath:str, opacity:int, volume:int):
         super().__init__()
         self.mediaPath = mediaPath
@@ -373,6 +400,10 @@ class Wmask(QWidget):
         self.player.setPlaylist(self.playlist)
         self.player.setVideoOutput(self.video_widget)
         self.player.setVolume(volume)
+    
+    def closeEvent(self, a0: QCloseEvent) -> None:
+        self.wmaskCloseSignal.emit(self.mediaPath)
+        return super().closeEvent(a0)
 
 
 # base64字符串转QIcon
